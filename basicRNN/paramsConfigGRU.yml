@@ -1,0 +1,16 @@
+model_type : GRU
+features_size : 50
+time_series: 9000
+hidden_size : 1000
+hidden_layers : 3
+output_indices : [1]
+num_epochs : 100
+learning_rate : 1e-4
+dataFolder: /raid1/ml4ao/torch_data/
+outputFolder: /raid1/ml4ao/torch_output/
+dataFile: tensor_data_olmodes4.pt
+labelsFile: tensor_data_labels4.pt
+splitFactor : 0.2
+batch_size: 64
+time_points: 128
+output_file: seeingGRU.pt
