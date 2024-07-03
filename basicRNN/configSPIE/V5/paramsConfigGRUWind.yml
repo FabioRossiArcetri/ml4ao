@@ -1,0 +1,18 @@
+model_type : GRU
+features_size : 199
+time_series: -1
+hidden_size : 400
+hidden_layers : 4
+output_indices : [2]
+num_epochs : 100
+learning_rate : 1e-4
+dataFolder: /raid1/ml4ao/torch_data/
+outputFolder: /raid1/ml4ao/torch_output/
+dataFile: tensor_data_olmodes4_V4.pt
+labelsFile: tensor_data_labels4_V4.pt
+labels_names: ["Wind"]
+splitFactor : 0.2
+batch_size: 128
+time_points: 128
+sampling: all
+output_file: WindGRU.pt

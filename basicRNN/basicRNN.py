@@ -1,14 +1,72 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, random_split
+from torchmetrics.regression import SymmetricMeanAbsolutePercentageError
 import sys
 import os
 import yaml
 import numpy as np
+
+import matplotlib as mpl
+
+mpl.rcParams["image.cmap"] = 'jet'
+
 import matplotlib.pyplot as plt
 
-torch.manual_seed(5125)
+SIZE_DEFAULT = 14
+SIZE_LARGE = 16
+#plt.rc("font", family="Roboto")  # controls default font
+#plt.rc("font", weight="normal")  # controls default font
+plt.rc("font", size=SIZE_DEFAULT)  # controls default text sizes
+plt.rc("axes", titlesize=SIZE_LARGE)  # fontsize of the axes title
+plt.rc("axes", labelsize=SIZE_LARGE)  # fontsize of the x and y labels
+plt.rc("xtick", labelsize=SIZE_DEFAULT)  # fontsize of the tick labels
+plt.rc("ytick", labelsize=SIZE_DEFAULT)  # fontsize of the tick labels
 
+from astropy.visualization.mpl_normalize import ImageNormalize
+from astropy.visualization import LogStretch
+import mpl_scatter_density
+
+from matplotlib.colors import LinearSegmentedColormap
+
+from matplotlib import cm
+from matplotlib.colors import Normalize 
+from scipy.interpolate import interpn
+
+def density_scatter(ts, l_ind, x , y,  ax1 = None, ax2 = None, fig = None, sort = True, bins = 20, **kwargs )   :
+
+    data, x_e, y_e = np.histogram2d( x, y, bins = bins, density = False )
+    z = interpn( ( 0.5*(x_e[1:] + x_e[:-1]) , 0.5*(y_e[1:]+y_e[:-1]) ) , data , np.vstack([x,y]).T , method = "linear", bounds_error = False)
+    #To be sure to plot all data
+    z[np.where(np.isnan(z))] = 0.0
+    # Sort the points by density, so that the densest points are plotted last
+    if sort :
+        idx = z.argsort()
+        x, y, z = x[idx], y[idx], z[idx]
+    xmin = 0.95 * min(np.min(x), np.min(y))
+    xmax = 1.05 * max(np.max(x), np.max(y))
+    ax1.set_xlim([xmin, xmax])
+    ax1.set_ylim([xmin, xmax])
+
+    ax1.set_aspect('equal', adjustable='box')
+    ax1.scatter( x, y, c=z, cmap='jet', **kwargs )
+    ax1.axline( (xmin,xmin),slope=1,linestyle='--',color='red')
+
+    norm = Normalize(vmin = np.min(z), vmax = np.max(z))
+    cbar = fig.colorbar(cm.ScalarMappable(norm = norm), ax=ax1, shrink=0.9)
+    cbar.ax.set_ylabel('Density (Simulations)')
+    
+    ax1.set_aspect('equal')    
+    err = x-y
+    lv = err
+    sigma = np.sqrt(np.mean(lv*lv))
+    num_bins = 40
+    ax2.hist( lv.ravel(), bins=np.linspace(-3.5*sigma, 3.5*sigma, num=num_bins))
+    ax2.set_ylabel('Simulations')
+    ax2.set_xlabel('Error [' +  ts.data_loader.units[l_ind] + ']')
+        
+    return ax1
+    
 # Check if GPU is available and set the device accordingly
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -41,9 +99,15 @@ class MultivariateGRU(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         # GRU Layer
-        self.gru = nn.GRU(features_size, hidden_size, num_layers, batch_first=True, dropout=0.03)
+        self.gru = nn.GRU(features_size, hidden_size, num_layers, batch_first=True, dropout=0.02)
         # Fully connected layer
-        self.fc1 = nn.Linear(hidden_size, output_size)
+        self.fc1 = nn.Linear(hidden_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.fc4 = nn.Linear(hidden_size, hidden_size)
+        self.fc5 = nn.Linear(hidden_size, output_size)
+        self.leaky_relu = nn.LeakyReLU(0.02)
+        self.dp = nn.Dropout(p=0.02)
 
 
     def forward(self, x):
@@ -54,8 +118,15 @@ class MultivariateGRU(nn.Module):
         # Taking the output of the last time step
         out = out[:, -1, :]
         # Forward pass through the fully connected layer
-        out = self.fc1(out)
-
+        out = self.leaky_relu(self.fc1(out) )
+        out = self.dp(out)
+        out = self.leaky_relu(self.fc2(out) )
+        out = self.dp(out)
+        out = self.leaky_relu(self.fc3(out) )
+        out = self.dp(out)
+        out = self.leaky_relu(self.fc4(out) )
+        out = self.dp(out)
+        out = self.fc5(out)
         return out
 
     
@@ -100,7 +171,7 @@ class RNNModel(nn.Module):
 
 class TimeSeriesDataLoader:
 
-    def __init__(self, model_type, data_path, labels_path, timesteps, features_size, timeseries, output_indices, test_split=0.2, batch_size=32, plotDists=True):
+    def __init__(self, model_type, data_path, labels_path, timesteps, sampling, features_size, timeseries, output_indices, labels_names, units, test_split=0.2, batch_size=32, plotDists=True):
         self.model_type = model_type
         self.data_path = data_path
         self.labels_path = labels_path
@@ -112,29 +183,61 @@ class TimeSeriesDataLoader:
         self.train_loader = None
         self.test_loader = None
         self.output_indices = output_indices
+        self.sampling = sampling
         
         gf = [6, 61, 242, 383, 242, 62, 6]
         self.afilter = 0.001 * np.array(gf)
         self.dest_points = timesteps
         self.plotDists = plotDists
+        self.labels_names = labels_names
+        self.units = units
         
         self._prepare_data_loaders()
 
     def _load_data(self):
         # Load data and labels from disk
-        data = torch.load(self.data_path).to(torch.float32)
+        data = torch.load(self.data_path).to(torch.float32)      
+
+        print('data.shape', data.shape)
         
-        dataOrig = data[:self.timeseries, 20:, :self.features_size]    
-        self.spacing = int(dataOrig.shape[1]/self.dest_points)+1
-        print('self.spacing', self.spacing)
-        self.h_space_points = int(self.spacing/2)
-
+        dataOrig = torch.transpose( data, 1, 2)
+        dataOrig = torch.abs(dataOrig[:self.timeseries, 50:, :self.features_size])
         labels = torch.load(self.labels_path).to(torch.float32)
-        self.labels = labels[:self.timeseries,self.output_indices]
-        self.data = dataOrig[:, ::self.spacing, :]
-#        self.data = dataOrig[:, 100:100+self.dest_points, :]
+        self.labels = labels[:self.timeseries,self.output_indices]        
+        if self.sampling=='spaced':
+            self.spacing = int(dataOrig.shape[1]/self.dest_points)+1
+            print('self.spacing', self.spacing)
+            self.h_space_points = int(self.spacing/2)
+            self.data = dataOrig[:, ::self.spacing, :]
+        elif self.sampling=='split':
+            tt = torch.split(dataOrig, self.dest_points, dim=1)
+            gtt = tt[1:-1]
+            nn = len(gtt)
+            self.data = torch.vstack(gtt)
+            newindices = []
+            for jj in range(nn):
+                for ii in range(dataOrig.shape[0]):            
+                    newindices.append(int(ii))
+            tindices = torch.as_tensor(newindices, dtype=torch.int32)
+            print('tindices.shape', tindices.shape)            
+            print('self.labels.shape', self.labels.shape)
+            self.labels = self.labels[tindices, :].clone()
+            print('self.labels.shape', self.labels.shape)
+        elif self.sampling=='avg':
+            self.spacing = int(dataOrig.shape[1]/self.dest_points)+1
+            print('self.spacing', self.spacing)
+            self.h_space_points = int(self.spacing/2)
+            avgLayer = torch.nn.AvgPool1d(2*self.h_space_points, stride=2*self.h_space_points)
+            self.data = avgLayer(dataOrig.permute(0,2,1)).permute(0,2,1)            
+        else:
+            print('dataOrig.shape', dataOrig.shape)
+            self.data = dataOrig[:, :self.dest_points, :]
+            print('self.data.shape', self.data.shape)
 
-        s1 = torch.sqrt( torch.mean(torch.square(dataOrig), 1))
+        print('data.shape', self.data.shape)
+        print('labels.shape', self.labels.shape)                
+
+        s1 = torch.sqrt( torch.mean(torch.square(self.data), 1))
         s2 = torch.mean(s1, dim=1)
         olStd, olMean  = torch.std_mean( s2 )
         # remove the outliers data points 
@@ -142,27 +245,30 @@ class TimeSeriesDataLoader:
             self.data = s1[ s2 < 2.0*olMean, : ] / olMean
             self.labels = self.labels[s2 < 2.0*olMean, :]         
         else:
-#            for ii in range(s1.shape[0]):
-#                if s2[ii] > 3.0*olMean:
-#                    self.data[ii, :, :] = 0.0
-#                    self.labels[ii, :] = 0.0
-            self.data = self.data[s2 < 2.0*olMean, :, :] / olMean
-            self.labels = self.labels[s2 < 2.0*olMean, :] 
+            print('self.labels_names', self.labels_names)
+            if self.labels_names[0]=='L0_':
+                self.data = self.data[ (self.labels[:,0] < 8.0) * (s2 < 2.0*olMean), :, :]/ olMean
+                self.labels = self.labels[ (self.labels[:,0] < 8.0) * (s2 < 2.0*olMean), :]        
+            else:
+                self.data = self.data[s2 < 2.0*olMean, :, :] / olMean
+                self.labels = self.labels[s2 < 2.0*olMean, :]
 
-                        
-        print('data.shape', self.data.shape)
-        print('labels.shape', self.labels.shape)                
-#        self.scales = torch.mean(self.labels, 0) + torch.std(self.labels, 0) 
-        self.scales = torch.median(self.labels, 0).values * 2.0
-        print("labels scales", self.scales)
-        self.labels = self.labels / self.scales
-        
         if self.plotDists:
             for ll in range(self.labels.shape[1]):
                 lv = self.labels[:, ll].numpy()
-                num_bins = 20 # <-- Change here - Specify total number of bins for histogram
-                plt.hist(lv.ravel(), bins=np.linspace(np.min(lv), np.max(lv), num=num_bins)) #<-- Change here.  Note the use of ravel.
+                num_bins = 80
+                plt.hist( lv.ravel(), bins=np.linspace(np.min(lv), np.max(lv), num=num_bins))
+                plt.ylabel('Simulations')
+                plt.xlabel('[' +  self.units[ll] + ']')
+                plt.title(self.labels_names[ll] + ' distribution')
                 plt.show()
+                
+        print('data.shape', self.data.shape)
+        print('labels.shape', self.labels.shape)                
+#        self.scales = torch.mean(self.labels, 0) + torch.std(self.labels, 0) 
+        self.scales = torch.max(self.labels, 0).values
+        print("labels scales", self.scales)
+        self.labels = self.labels / self.scales
         
         print("labels scales", torch.mean(self.labels, 0))
         
@@ -175,7 +281,8 @@ class TimeSeriesDataLoader:
         self.total_samples = len(self.dataset)
         self.test_size = int(self.test_split * self.total_samples)
         self.train_size = self.total_samples - self.test_size
-        
+
+        torch.manual_seed(5125)
         self.train_dataset, self.test_dataset = random_split(self.dataset, [self.train_size, self.test_size])
         print('train_dataset', self.train_size)
         print('test_dataset', self.test_size)
@@ -195,27 +302,14 @@ class trainingService(object):
     def __init__(self, parametersFile):
         if os.path.exists(parametersFile):
             with open(parametersFile) as f:
-                my_yaml_dict = yaml.safe_load(f)        
+                my_yaml_dict = yaml.safe_load(f)
             self.my_data_map = my_yaml_dict
-        self.features_size = self.my_data_map['features_size']
-        self.hidden_size = self.my_data_map['hidden_size']
-        self.hidden_layers = self.my_data_map['hidden_layers']
-        self.output_size = len(self.my_data_map['output_indices'])
-        self.output_indices = self.my_data_map['output_indices']
-        self.num_epochs = self.my_data_map['num_epochs']
-        self.learning_rate = self.my_data_map['learning_rate']
-        self.dataFolder = self.my_data_map['dataFolder']
-        self.outputFolder = self.my_data_map['outputFolder']        
-        self.dataFile = self.my_data_map['dataFile']
-        self.labelsFile = self.my_data_map['labelsFile']
-        self.labels_names = self.my_data_map['labels_names']
-        self.splitFactor = self.my_data_map['splitFactor']
-        self.batch_size = self.my_data_map['batch_size']
-        self.time_points = self.my_data_map['time_points']
-        self.time_series = self.my_data_map['time_series']
-        self.model_type = self.my_data_map['model_type']
-        self.output_file = self.my_data_map['output_file']
+        for kk in self.my_data_map.keys():
+            object.__setattr__(self, kk, self.my_data_map[kk])
         self.weight_decay=1e-4
+        self.output_size = len(self.my_data_map['output_indices'])
+        self.labels_names = self.my_data_map['labels_names']
+        self.units = self.my_data_map['units']
         
     def saveModel(self):
         torch.save(self.model.state_dict(), self.output_file)
@@ -227,14 +321,17 @@ class trainingService(object):
         
     def loadData(self, plotDists=True):
         # Retrieve train and test loaders
-                      
+        print('self.time_points', self.time_points)              
         self.data_loader = TimeSeriesDataLoader(self.model_type,
                                             os.path.join(self.dataFolder, self.dataFile),
                                            os.path.join(self.dataFolder, self.labelsFile),
                                            self.time_points,
+                                           self.sampling,
                                            self.features_size, 
                                            self.time_series,
                                            self.output_indices,
+                                           self.labels_names, 
+                                           self.units, 
                                            test_split=self.splitFactor, batch_size=self.batch_size, plotDists=plotDists)
         self.train_loader = self.data_loader.get_train_loader()
         self.test_loader = self.data_loader.get_test_loader()
@@ -251,14 +348,15 @@ class trainingService(object):
         elif self.model_type=='MLP':
             self.model = MLPModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device)
                     
-        self.criterion = nn.MSELoss()
+        self.criterion0 = nn.MSELoss()
+        self.criterion1 = SymmetricMeanAbsolutePercentageError().to(device) # nn.MSELoss()
     
         
-    def trainModel(self, learning_rate=None, weight_decay=0, num_epochs=None):
+    def trainModel(self, learning_rate=None, weight_decay=0, num_epochs=None, saveBest=False):
         if learning_rate:
             self.learning_rate = learning_rate
             self.num_epochs = num_epochs
-
+        bestLossTest = 1e9
         self.weight_decay = weight_decay
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         self.model.train()
@@ -270,18 +368,22 @@ class trainingService(object):
                 labels = labels.to(device)
                 # Forward pass
                 outputs = self.model(inputs)
-                loss = self.criterion(outputs, labels)
+                if epoch<10:
+                    loss = self.criterion0(outputs, labels)
+                else:
+                    loss = self.criterion1(outputs, labels)
+                    
                 # Backward pass and optimization
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
                 running_loss1 += loss.cpu().item()
-            running_loss1 =  running_loss1 / (self.data_loader.train_size / self.batch_size)
-            
-            if (epoch+1) % 5 == 0:        
-                lossTest = self.testModel()            
-                print(f'Epoch [{epoch+1}/{self.num_epochs}]], Loss: {loss.item():.6f}, , Loss Val: {lossTest:.6f}')
-            
+            running_loss1 =  running_loss1 / (self.data_loader.train_size / self.batch_size)            
+            lossTest = self.testModel()            
+            print(f'Epoch [{epoch+1}/{self.num_epochs}]], Loss: {loss.item():.6f}, , Loss Val: {lossTest:.6f}')
+            if lossTest < bestLossTest:
+                bestLossTest = lossTest
+                self.saveModel()
             
     def testModel(self):
         self.model.eval()
@@ -291,7 +393,7 @@ class trainingService(object):
                 inputsT = inputsT.to(device)
                 labelsT = labelsT.to(device)
                 outputsT = self.model(inputsT)
-                lossV = self.criterion(outputsT, labelsT)
+                lossV = self.criterion1(outputsT, labelsT)
                 running_loss2 += lossV.cpu().item()
         self.model.train()
         running_loss2 =  running_loss2 / (self.data_loader.test_size / self.batch_size)
@@ -299,7 +401,11 @@ class trainingService(object):
 #        return test_errors, test_labels, test_predictions
 
 
-def plotResults(ts, labelsIndices):
+def plotResults(ts, labelsIndices=None):
+
+    if labelsIndices is None:
+        labelsIndices = range(len(ts.labels_names))
+    
     for l_ind in labelsIndices:
 
         print("Results for: ", ts.labels_names[l_ind])
@@ -319,7 +425,7 @@ def plotResults(ts, labelsIndices):
                 test_errors.extend(errorsT.cpu().numpy())
                 test_labels.extend(labelsT.view(-1).tolist())
                 test_predictions.extend(outputsT.view(-1).tolist())
-                lossV = ts.criterion(outputsT, labelsT)
+                lossV = ts.criterion1(outputsT, labelsT)
                 running_loss1 += lossV.cpu().item()
 
         train_errors = []
@@ -348,28 +454,42 @@ def plotResults(ts, labelsIndices):
         test_predictions = np.array(test_predictions)
         train_predictions = np.array(train_predictions)
 
-        plt.scatter(test_labels, test_predictions, label=' Test Set')
-        plt.scatter(train_labels, train_predictions, label=' Training Set')
-        plt.scatter(test_labels, test_labels, label=' Truth')
+        test_labels *= ts.data_loader.scales[l_ind].item()
+        train_labels *= ts.data_loader.scales[l_ind].item()
+        test_predictions *= ts.data_loader.scales[l_ind].item()
+        train_predictions *= ts.data_loader.scales[l_ind].item()
+
+        train_errors = train_labels - train_predictions        
+        test_errors = test_labels - test_predictions
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=[24,10])
+
+        fig.suptitle(ts.labels_names[l_ind], fontsize=24)
+
+        ax12 = fig.add_axes([0.294, 0.225, 0.11, 0.2])
+        ax22 = fig.add_axes([0.718, 0.225, 0.11, 0.2])
+
+        ax = density_scatter(ts, l_ind, train_labels, train_predictions, ax1, ax12, fig, bins=[15,15])
+        ax.set_title('Training Set')
+        ax.set_xlabel('Truth ' + '[' +  ts.data_loader.units[l_ind] + ']')
+        ax.set_ylabel('Estimate ' + '[' +  ts.data_loader.units[l_ind] + ']')
+        ax = density_scatter(ts, l_ind, test_labels, test_predictions, ax2, ax22, fig, bins=[15,15])
+        ax.set_title('Test Set')
+        ax.set_xlabel('Truth ' + '[' +  ts.data_loader.units[l_ind] + ']')
+        ax.set_ylabel('Estimate ' + '[' +  ts.data_loader.units[l_ind] + ']')
+        plt.show()
 
         test_abs_errors = np.abs(test_errors)
         train_abs_errors = np.abs(train_errors)
         print("Mean/Median Absolute error TEST:", np.mean(test_abs_errors), np.median(test_abs_errors))
         print("Mean/Median Absolute error TRAIN:", np.mean(train_abs_errors), np.median(train_abs_errors))
-
         print("R^2", 1-np.mean(np.square(test_abs_errors))/np.var(test_labels))
-
         test_labels[test_labels == 0.0] = 1
         train_labels[train_labels == 0.0] = 1
         print("Mean/Median Relative error TEST:", np.mean(np.abs(test_errors)/np.abs(test_labels)), np.median(np.abs(test_errors)/np.abs(test_labels)))
         print("Mean/Median Relative error TRAIN:", np.mean(np.abs(train_errors)/np.abs(train_labels)), np.median(np.abs(train_errors)/np.abs(train_labels)))
-        #plt.ylim(0, 1)
-        #plt.xlim(0, 1)
-        plt.legend()
-        plt.show()
 
     if __name__ == '__main__':
-
         # it is considered as the model base name
         param_1 = sys.argv[1]
         ts = trainingService(param_1)

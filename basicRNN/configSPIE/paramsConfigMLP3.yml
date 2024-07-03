@@ -1,0 +1,17 @@
+model_type : MLP
+features_size : 200
+time_series: -1
+hidden_size : [200,160,120,90,70,50]
+hidden_layers : -1
+output_indices : [0,2,3]
+num_epochs : 100
+learning_rate : 1e-5
+dataFolder: /raid1/ml4ao/torch_data/
+outputFolder: /raid1/ml4ao/torch_output/
+dataFile: tensor_data_olmodes4.pt
+labelsFile: tensor_data_labels4.pt
+labels_names: ["Seeing", "Tau0", "Strehl"]
+splitFactor : 0.2
+batch_size: 128
+time_points: 1800
+output_file: seeingMLP4.pt

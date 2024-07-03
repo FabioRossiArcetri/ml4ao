@@ -1,0 +1,19 @@
+model_type : GRU
+features_size : 199
+time_series: -1
+hidden_size : 512
+hidden_layers : 5
+output_indices : [2,4,5,6,7]
+num_epochs : 100
+learning_rate : 1e-4
+dataFolder: /raid1/ml4ao/torch_data/
+outputFolder: /raid1/ml4ao/torch_output/
+dataFile: tensor_data_olmodes4_V8.pt
+labelsFile: tensor_data_labels4_V8.pt
+labels_names: ['WindAvg', 'Wind0', 'Wind1', 'Wind2', 'Wind3']
+units: ['m/s', 'm/s', 'm/s', 'm/s', 'm/s']
+splitFactor : 0.2
+batch_size: 64
+time_points: 512
+sampling: all
+output_file: AllWindsGRU_V9.pt
