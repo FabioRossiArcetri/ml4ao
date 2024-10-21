@@ -1,8 +1,9 @@
 model_type : GRU
-features_size : 255
+features_avg : [25, 75, 150, 350, 500]
 time_series: -1
-hidden_size : 768
-hidden_layers : 5
+hidden_size : 256
+dropout : 0.01
+hidden_layers : 4
 output_indices : [3]
 num_epochs : 100
 learning_rate : 1e-4
@@ -13,8 +14,8 @@ labelsFile: tensor_data_labels13_V9.pt
 labels_names: ["Strehl"]
 units: ['1']
 splitFactor : 0.2
-batch_size: 16
-averaging: 1
+batch_size: 128
+averaging: 8
 spacing: 1
 limit: 1700
 output_file: StrehlGRU_V10.pt

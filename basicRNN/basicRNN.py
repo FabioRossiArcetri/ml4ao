@@ -17,6 +17,8 @@ max_datset_elements = -1
 
 import matplotlib.pyplot as plt
 
+default_type = torch.float32
+
 SIZE_DEFAULT = 14
 SIZE_LARGE = 16
 #plt.rc("font", family="Roboto")  # controls default font
@@ -98,28 +100,24 @@ class MLPModel(nn.Sequential):
     
 
 class MultivariateGRU(nn.Module):
-    def __init__(self, features_size, hidden_size, output_size, num_layers):
+    def __init__(self, features_size, hidden_size, output_size, num_layers, dropout_level=0.02):
         super(MultivariateGRU, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         # GRU Layer
-        self.gru = nn.GRU(features_size, hidden_size, num_layers, batch_first=True, dropout=0.06)
-#        self.lstm = nn.LSTM(features_size, hidden_size, num_layers, batch_first=True, dropout=0.06)
+        self.gru = nn.GRU(features_size, hidden_size, num_layers, batch_first=True, dropout=dropout_level)
         # Fully connected layer
         self.fc1 = nn.Linear(hidden_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
-#        self.fc3 = nn.Linear(hidden_size//4, hidden_size//8)
-#        self.fc4 = nn.Linear(hidden_size//8, hidden_size//16)
-        self.fc5 = nn.Linear(hidden_size, output_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.fc4 = nn.Linear(hidden_size, output_size)
         self.leaky_relu = nn.LeakyReLU(0.02)
-#        self.dp = nn.Dropout(p=0.05)
-        self.dp = nn.Dropout(p=0.06)
-
+        self.dp = nn.Dropout(p=dropout_level)
 
     def forward(self, x):
         # Initializing hidden state for first input
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
-        #c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device, dtype=default_type)
+        #c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device, dtype=default_type)
         # Forward pass through GRU layer
         out, _ = self.gru(x, h0)
         #out, _ = self.lstm(x, (h0, c0))
@@ -130,13 +128,10 @@ class MultivariateGRU(nn.Module):
         out = self.dp(out)
         out = self.leaky_relu(self.fc2(out) )
         out = self.dp(out)
-#        out = self.leaky_relu(self.fc3(out) )
-#        out = self.dp(out)
-#        out = self.leaky_relu(self.fc4(out) )
-#        out = self.dp(out)
-        out = self.fc5(out)
+        out = self.fc3(out)
+        out = self.dp(out)
+        out = self.fc4(out)
         return out
-
     
 class MultivariateLSTM(nn.Module):
     def __init__(self, features_size, hidden_size, output_size, num_layers):
@@ -150,8 +145,8 @@ class MultivariateLSTM(nn.Module):
         
     def forward(self, x):
         # Initializing hidden state and cell state
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device, dtype=default_type)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device, dtype=default_type)
         # Forward pass through LSTM layer
         out, _ = self.lstm(x, (h0, c0))
         # Taking the output of the last time step
@@ -179,14 +174,14 @@ class RNNModel(nn.Module):
 
 class TimeSeriesDataLoader:
 
-    def __init__(self, model_type, data_path, labels_path, averaging, spacing, limit, features_size, output_indices, labels_names, units, test_split=0.2, batch_size=32, plotDists=True):
+    def __init__(self, model_type, data_path, labels_path, averaging, spacing, limit, features_avg, output_indices, labels_names, units, test_split=0.2, batch_size=32, plotDists=True):
         self.model_type = model_type
         self.data_path = data_path
         self.labels_path = labels_path
         self.test_split = test_split
         self.batch_size = batch_size
-        self.features_size = features_size
-        self.scales = None
+        self.features_avg = features_avg
+        self.labels_scales = None
         self.train_loader = None
         self.test_loader = None
         self.output_indices = output_indices
@@ -195,80 +190,68 @@ class TimeSeriesDataLoader:
         self.spacing = spacing
         self.limit = limit
         
-        gf = [6, 61, 242, 383, 242, 62, 6]
-        self.afilter = 0.001 * np.array(gf)
+        # commenting as this is not used right now
+        # gf = [6, 61, 242, 383, 242, 62, 6]
+        # self.afilter = 0.001 * np.array(gf)
+        
         self.plotDists = plotDists
         self.labels_names = labels_names
         self.units = units
+        self.transient_cut = 340 # discard first 340 timesteps, diring which the loop is converging
         
         self._prepare_data_loaders()
 
     def _load_data(self):
         # Load data and labels from disk
-        data = torch.load(self.data_path).to(torch.float32)      
-        
+        data = torch.load(self.data_path).to(default_type)
         dataOrig = torch.transpose( data, 1, 2)        
-        print('dataOrig.shape', dataOrig.shape)
-        
-        dataOrig = torch.abs(dataOrig[:max_datset_elements, 170:, :])
-#        dataOrig = dataOrig[:max_datset_elements, 240:, :]
-                
-        avgLayer2 = torch.nn.AvgPool1d(2, stride=2)
-        avgLayer4 = torch.nn.AvgPool1d(4, stride=4)
-
-#        dataOrig2 = avgLayer2(dataOrig[:,:,256:500])
-##        dataOrig4 = avgLayer4(dataOrig[:,:,256:])
-##        dataOrig = torch.cat((dataOrig[:,:,:256], dataOrig2, dataOrig4), 2)
-#        dataOrig = torch.cat((dataOrig[:,:,:256], dataOrig2), 2)
-
-        dataOrig = dataOrig[:,:,:380]
-        
-        labels = torch.load(self.labels_path).to(torch.float32)
-        self.labels = labels[:max_datset_elements,self.output_indices]
-
-        if self.averaging>=2:
-            self.h_space_points = int(self.averaging/2)
-            avgLayer = torch.nn.AvgPool1d(2*self.h_space_points, stride=2*self.h_space_points)
-            self.data = avgLayer(dataOrig.permute(0,2,1)).permute(0,2,1)
-#            self.data = avgLayer(dataOrig.permute(0,2,1))
-        else:
-#            self.data = dataOrig.permute(0,2,1)
-            self.data = dataOrig
-            
-        self.data = self.data[:,:self.limit:self.spacing,:]
+        print('dataOrig.shape', dataOrig.shape)        
+        dataOrig = torch.abs(dataOrig[:max_datset_elements, self.transient_cut:, :])
+        # number of modes for a given order or less than it is n*(n+1)/2 -1
+        # 14 -> 104
+        # 21 -> 230
+        # averaging in the modes dimension
+        # first interval of modes is not averaged (lower modes, 0..103)
+        # second interval of modes is averaged with a window of 2 elements (intermediate modes, 104..230)
+        # third interval of modes is averaged with a window of 4 elements (high modes)
+        # total in the modes dimension 104 + (230-104)/2 + (500-230)/4 = 104+63+67=234        
+        if len(self.features_avg)>0:
+            dataOrigList = []
+            avg_n_modes_p = 0
+            for avg_i, avg_n_modes in enumerate(self.features_avg):                
+                if avg_i>0 and avg_n_modes-avg_n_modes_p>0:
+                    # w averaging
+                    w = avg_i+1
+                    avgLayerI = torch.nn.AvgPool1d(w, stride=w)
+                    dataOrigI = avgLayerI(dataOrig[:,:,avg_n_modes_p:avg_n_modes])
+                else:
+                    # w=1 w-averaging are just the first avg_n_modes
+                    dataOrigI = dataOrig[:,:,:avg_n_modes]
+                    
+                avg_n_modes_p = avg_n_modes
+                dataOrigList.append(dataOrigI)        
+            dataOrig = torch.cat(dataOrigList, 2)        
+#        else: # do nothing
+#            dataOrig[:,:,103:229]
         
         self.features_size = dataOrig.shape[2]
 
-#        if self.sampling=='spaced':
-#            self.spacing = int(dataOrig.shape[1]/self.dest_points)+1
-#            print('self.spacing', self.spacing)
-#            self.h_space_points = int(self.spacing/2)
-#            self.data = dataOrig[:, ::self.spacing, :]
-#        elif self.sampling=='split':
-#            tt = torch.split(dataOrig, self.dest_points, dim=1)
-#            gtt = tt[1:-1]
-#            nn = len(gtt)
-#            self.data = torch.vstack(gtt)
-#            newindices = []
-#            for jj in range(nn):
-#                for ii in range(dataOrig.shape[0]):            
-#                    newindices.append(int(ii))
-#            tindices = torch.as_tensor(newindices, dtype=torch.int32)
-#            print('tindices.shape', tindices.shape)            
-#            print('self.labels.shape', self.labels.shape)
-#            self.labels = self.labels[tindices, :].clone()
-#            print('self.labels.shape', self.labels.shape)
-#        elif self.sampling=='avg':
-#            self.spacing = int(dataOrig.shape[1]/self.dest_points)+1
-#            print('self.spacing', self.spacing)
-#            self.h_space_points = int(self.spacing/2)
-#            avgLayer = torch.nn.AvgPool1d(2*self.h_space_points, stride=2*self.h_space_points)
-#            self.data = avgLayer(dataOrig.permute(0,2,1)).permute(0,2,1)            
-#        else:
-#            print('dataOrig.shape', dataOrig.shape)
-#            self.data = dataOrig[:, :self.dest_points, :]
-#            print('self.data.shape', self.data.shape)
-
+        # this was simply using the first 255 modes, cutting the higher order ones
+        # dataOrig = dataOrig[:,:,:255]
+        
+        labels = torch.load(self.labels_path).to(default_type)
+        self.labels = labels[:max_datset_elements,self.output_indices]
+        
+        # Averaging in the time dimension, 1 means no averaging
+        if self.averaging>=2:
+            h_space_points = int(self.averaging/2)
+            avgLayer = torch.nn.AvgPool1d(2*h_space_points, stride=2*h_space_points)
+            self.data = avgLayer(dataOrig.permute(0,2,1)).permute(0,2,1)
+        else:
+            self.data = dataOrig
+        # Sub-sampling in the time dimension, 1 means no averaging
+        self.data = self.data[:,:self.limit:self.spacing,:]
+        
         print('data.shape', self.data.shape)
         print('labels.shape', self.labels.shape)                
 
@@ -300,25 +283,14 @@ class TimeSeriesDataLoader:
                 plt.title(self.labels_names[ll] + ' distribution')
                 plt.show()
                 
-        print('labels.shape', self.labels.shape)                
+        print('labels.shape', self.labels.shape)
         print('data.shape', self.data.shape)
-        #        self.scales = torch.mean(self.labels, 0) + torch.std(self.labels, 0) 
-        self.scales = torch.max(self.labels, 0).values
-    
-        self.scalesD = self.data.pow(2).mean(dim=0).sqrt()
-        print('self.scalesD.shape', self.scalesD.shape)
-        self.scalesD = self.data.pow(2).mean(dim=1).sqrt()
-        print('self.scalesD.shape', self.scalesD.shape)
-        self.scalesD = self.data.pow(2).mean(dim=2).sqrt()
-        print('self.scalesD.shape', self.scalesD.shape)
-
-        self.data = self.data/self.scalesD    
-#        self.scalesD = torch.max(self.data, 1).values
-        
-        print("labels scales", self.scales)
-        self.labels = self.labels / self.scales
-        
-        print("labels scales", torch.mean(self.labels, 0))
+        #        self.labels_scales = torch.mean(self.labels, 0) + torch.std(self.labels, 0) 
+        self.labels_scales = torch.max(self.labels, 0).values    
+        self.inputs_scales = self.data.pow(2).mean(dim=0).sqrt()                
+        self.data = self.data/self.inputs_scales        
+        self.labels = self.labels / self.labels_scales        
+        print("Mean labels after scaling", torch.mean(self.labels, 0))
         
         return TensorDataset(self.data, self.labels)
 
@@ -360,11 +332,11 @@ class trainingService(object):
         self.units = self.my_data_map['units']
         
     def saveModel(self):
-        torch.save(self.model.state_dict(), self.output_file)
+        torch.save(self.model.state_dict(), os.path.join(self.outputFolder, self.output_file))
 
     def loadModel(self):
         self.setupModel()
-        self.model.load_state_dict(torch.load(self.output_file))
+        self.model.load_state_dict(torch.load(os.path.join(self.outputFolder, self.output_file)))
         # self.model.eval()
         
     def loadData(self, plotDists=True):
@@ -375,28 +347,29 @@ class trainingService(object):
                                            self.averaging,
                                            self.spacing,
                                            self.limit,
-                                           self.features_size, 
+                                           self.features_avg, 
                                            self.output_indices,
                                            self.labels_names, 
                                            self.units, 
                                            test_split=self.splitFactor, batch_size=self.batch_size, plotDists=plotDists)
         self.train_loader = self.data_loader.get_train_loader()
         self.test_loader = self.data_loader.get_test_loader()
+        self.features_size = self.data_loader.features_size
 
     def setupModel(self):
         
         # Initialize the model, loss function, and optimizer
         if self.model_type=='GRU':
-            self.model = MultivariateGRU(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device)
+            self.model = MultivariateGRU(self.features_size, self.hidden_size, self.output_size, self.hidden_layers, self.dropout).to(device, dtype=default_type)
         elif self.model_type=='RNN':
-            self.model = RNNModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device)
+            self.model = RNNModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device, dtype=default_type)
         elif self.model_type=='LSTM':
-            self.model = MultivariateLSTM(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device)
+            self.model = MultivariateLSTM(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device, dtype=default_type)
         elif self.model_type=='MLP':
-            self.model = MLPModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device)
+            self.model = MLPModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device, dtype=default_type)
                     
         self.criterion0 = nn.MSELoss()
-        self.criterion1 = SymmetricMeanAbsolutePercentageError().to(device) # nn.MSELoss()
+        self.criterion1 = SymmetricMeanAbsolutePercentageError().to(device, dtype=default_type) # nn.MSELoss()
     
         
     def trainModel(self, learning_rate=None, weight_decay=0, num_epochs=None, saveBest=False):
@@ -411,8 +384,8 @@ class trainingService(object):
         for epoch in range(self.num_epochs):
             running_loss1 = 0.0
             for i, (inputs, labels) in enumerate(self.train_loader):
-                inputs = inputs.to(device) 
-                labels = labels.to(device)
+                inputs = inputs.to(device, dtype=default_type) 
+                labels = labels.to(device, dtype=default_type)
                 # Forward pass
                 outputs = self.model(inputs)
 #                if epoch<self.num_epochs//4:
@@ -436,8 +409,8 @@ class trainingService(object):
         running_loss2 = 0.0
         with torch.no_grad():  # No need to track gradients during evaluation
             for inputsT, labelsT in self.test_loader:
-                inputsT = inputsT.to(device)
-                labelsT = labelsT.to(device)
+                inputsT = inputsT.to(device, dtype=default_type)
+                labelsT = labelsT.to(device, dtype=default_type)
                 outputsT = self.model(inputsT)
                 lossV = self.criterion0(outputsT, labelsT)
                 running_loss2 += lossV.cpu().item()
@@ -464,8 +437,8 @@ def plotResults(ts, labelsIndices=None):
         running_loss1 = 0.0
         with torch.no_grad():  # No need to track gradients during evaluation
             for i, (inputsT, labelsT) in enumerate(ts.test_loader):
-                inputsT = inputsT.to(device)
-                labelsT = labelsT.to(device)[:,l_ind]
+                inputsT = inputsT.to(device, dtype=default_type)
+                labelsT = labelsT.to(device, dtype=default_type)[:,l_ind]
                 outputsT = ts.model(inputsT)[:,l_ind]
                 errorsT = outputsT - labelsT
                 test_errors.extend(errorsT.cpu().numpy())
@@ -479,8 +452,8 @@ def plotResults(ts, labelsIndices=None):
         train_predictions = []
         with torch.no_grad():  # No need to track gradients during evaluation
             for i, (inputs, labels) in enumerate(ts.train_loader):
-                inputs = inputs.to(device)
-                labels = labels.to(device)[:,l_ind]
+                inputs = inputs.to(device, dtype=default_type)
+                labels = labels.to(device, dtype=default_type)[:,l_ind]
                 outputs = ts.model(inputs)[:,l_ind]
                 # Compute the error for each sample
                 errors = outputs - labels
@@ -500,10 +473,10 @@ def plotResults(ts, labelsIndices=None):
         test_predictions = np.array(test_predictions)
         train_predictions = np.array(train_predictions)
 
-        test_labels *= ts.data_loader.scales[l_ind].item()
-        train_labels *= ts.data_loader.scales[l_ind].item()
-        test_predictions *= ts.data_loader.scales[l_ind].item()
-        train_predictions *= ts.data_loader.scales[l_ind].item()
+        test_labels *= ts.data_loader.labels_scales[l_ind].item()
+        train_labels *= ts.data_loader.labels_scales[l_ind].item()
+        test_predictions *= ts.data_loader.labels_scales[l_ind].item()
+        train_predictions *= ts.data_loader.labels_scales[l_ind].item()
 
         train_errors = train_labels - train_predictions        
         test_errors = test_labels - test_predictions

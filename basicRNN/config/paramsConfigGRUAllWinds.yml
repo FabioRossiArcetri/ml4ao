@@ -1,8 +1,9 @@
 model_type : GRU
-features_size : 380
-time_series: 1000
+features_avg : []
+time_series: -1
 hidden_size : 512
 hidden_layers : 5
+dropout : 0.03
 output_indices : [2,4,5,6,7]
 num_epochs : 100
 learning_rate : 1e-4
