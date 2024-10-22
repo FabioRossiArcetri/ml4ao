@@ -100,37 +100,34 @@ class MLPModel(nn.Sequential):
     
 
 class MultivariateGRU(nn.Module):
-    def __init__(self, features_size, hidden_size, output_size, num_layers, dropout_level=0.02):
+    def __init__(self, features_size, hidden_size, output_size, num_layers, dropout_level=0.02, mlp_layers=4):
         super(MultivariateGRU, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.mlp_layers = mlp_layers
         # GRU Layer
         self.gru = nn.GRU(features_size, hidden_size, num_layers, batch_first=True, dropout=dropout_level)
-        # Fully connected layer
-        self.fc1 = nn.Linear(hidden_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, hidden_size)
-        self.fc4 = nn.Linear(hidden_size, output_size)
+        # Fully connected layers
+        self.fc = nn.ModuleList()
+        for ll in range(self.mlp_layers):
+            self.fc.append(nn.Linear(hidden_size, hidden_size))                
+        self.out_layer = nn.Linear(hidden_size, output_size)
         self.leaky_relu = nn.LeakyReLU(0.02)
         self.dp = nn.Dropout(p=dropout_level)
 
     def forward(self, x):
         # Initializing hidden state for first input
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device, dtype=default_type)
-        #c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device, dtype=default_type)
         # Forward pass through GRU layer
         out, _ = self.gru(x, h0)
-        #out, _ = self.lstm(x, (h0, c0))
         # Taking the output of the last time step
-        out = out[:, -1, :] # (out[:, -1, :] + out[:, -2, :] + out[:, -3, :] + out[:, -4, :]) / 4.0
+        out = out[:, -1, :]
         # Forward pass through the fully connected layer
-        out = self.leaky_relu(self.fc1(out) )
-        out = self.dp(out)
-        out = self.leaky_relu(self.fc2(out) )
-        out = self.dp(out)
-        out = self.fc3(out)
-        out = self.dp(out)
-        out = self.fc4(out)
+        for ll in range(self.mlp_layers):
+            out = self.fc[ll](out)
+            out = self.leaky_relu(out)
+            out = self.dp(out)            
+        out = self.out_layer(out)
         return out
     
 class MultivariateLSTM(nn.Module):
@@ -360,7 +357,7 @@ class trainingService(object):
         
         # Initialize the model, loss function, and optimizer
         if self.model_type=='GRU':
-            self.model = MultivariateGRU(self.features_size, self.hidden_size, self.output_size, self.hidden_layers, self.dropout).to(device, dtype=default_type)
+            self.model = MultivariateGRU(self.features_size, self.hidden_size, self.output_size, self.hidden_layers, self.dropout, self.mlp_layers).to(device, dtype=default_type)
         elif self.model_type=='RNN':
             self.model = RNNModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device, dtype=default_type)
         elif self.model_type=='LSTM':

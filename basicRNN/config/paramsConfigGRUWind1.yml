@@ -3,7 +3,7 @@ features_avg : []
 time_series: -1
 hidden_size : 1024
 hidden_layers : 5
-dropout : 0.03
+dropout : 0.02
 output_indices : [5]
 num_epochs : 100
 learning_rate : 1e-4
