@@ -104,16 +104,23 @@ class MultivariateGRU(nn.Module):
         super(MultivariateGRU, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.mlp_layers = mlp_layers
         # GRU Layer
         self.gru = nn.GRU(features_size, hidden_size, num_layers, batch_first=True, dropout=dropout_level)
         # Fully connected layers
         self.fc = nn.ModuleList()
-        for ll in range(self.mlp_layers):
-            self.fc.append(nn.Linear(hidden_size, hidden_size))                
-        self.out_layer = nn.Linear(hidden_size, output_size)
+        if type(mlp_layers) is list:
+            self.fc.append(nn.Linear(hidden_size, mlp_layers[0]))
+            for ll in range(0, len(mlp_layers)-1):
+                self.fc.append(nn.Linear(mlp_layers[ll], mlp_layers[ll+1]))            
+            self.out_layer = nn.Linear(mlp_layers[-1], output_size)
+            self.mlp_layers = len(mlp_layers)
+        else:
+            for ll in range(mlp_layers):
+                self.fc.append(nn.Linear(hidden_size, hidden_size))                
+            self.mlp_layers = mlp_layers
+            self.out_layer = nn.Linear(hidden_size, output_size)
         self.leaky_relu = nn.LeakyReLU(0.02)
-        self.dp = nn.Dropout(p=dropout_level)
+        self.dp = nn.Dropout(p=dropout_level*2)
 
     def forward(self, x):
         # Initializing hidden state for first input
@@ -204,14 +211,6 @@ class TimeSeriesDataLoader:
         dataOrig = torch.transpose( data, 1, 2)        
         print('dataOrig.shape', dataOrig.shape)        
         dataOrig = torch.abs(dataOrig[:max_datset_elements, self.transient_cut:, :])
-        # number of modes for a given order or less than it is n*(n+1)/2 -1
-        # 14 -> 104
-        # 21 -> 230
-        # averaging in the modes dimension
-        # first interval of modes is not averaged (lower modes, 0..103)
-        # second interval of modes is averaged with a window of 2 elements (intermediate modes, 104..230)
-        # third interval of modes is averaged with a window of 4 elements (high modes)
-        # total in the modes dimension 104 + (230-104)/2 + (500-230)/4 = 104+63+67=234        
         if len(self.features_avg)>0:
             dataOrigList = []
             avg_n_modes_p = 0
@@ -224,21 +223,12 @@ class TimeSeriesDataLoader:
                 else:
                     # w=1 w-averaging are just the first avg_n_modes
                     dataOrigI = dataOrig[:,:,:avg_n_modes]
-                    
                 avg_n_modes_p = avg_n_modes
                 dataOrigList.append(dataOrigI)        
             dataOrig = torch.cat(dataOrigList, 2)        
-#        else: # do nothing
-#            dataOrig[:,:,103:229]
-        
         self.features_size = dataOrig.shape[2]
-
-        # this was simply using the first 255 modes, cutting the higher order ones
-        # dataOrig = dataOrig[:,:,:255]
-        
         labels = torch.load(self.labels_path).to(default_type)
         self.labels = labels[:max_datset_elements,self.output_indices]
-        
         # Averaging in the time dimension, 1 means no averaging
         if self.averaging>=2:
             h_space_points = int(self.averaging/2)
@@ -364,18 +354,19 @@ class trainingService(object):
             self.model = MultivariateLSTM(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device, dtype=default_type)
         elif self.model_type=='MLP':
             self.model = MLPModel(self.features_size, self.hidden_size, self.output_size, self.hidden_layers).to(device, dtype=default_type)
-                    
-        self.criterion0 = nn.MSELoss()
-        self.criterion1 = SymmetricMeanAbsolutePercentageError().to(device, dtype=default_type) # nn.MSELoss()
+        
+        self.metrics = []
+        self.metrics.append(nn.MSELoss())
+        self.metrics.append(SymmetricMeanAbsolutePercentageError().to(device, dtype=default_type))
     
         
-    def trainModel(self, learning_rate=None, weight_decay=0, num_epochs=None, saveBest=False):
+    def trainModel(self, learning_rate=None, weight_decay=0, num_epochs=None, metric_idx=0):
         if learning_rate:
             self.learning_rate = learning_rate
             self.num_epochs = num_epochs
         bestLossTest = 1e9
         self.weight_decay = weight_decay
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         self.model.train()
         # Training loop
         for epoch in range(self.num_epochs):
@@ -385,36 +376,30 @@ class trainingService(object):
                 labels = labels.to(device, dtype=default_type)
                 # Forward pass
                 outputs = self.model(inputs)
-#                if epoch<self.num_epochs//4:
-                loss = self.criterion0(outputs, labels)
-#                else:
-#                    loss = self.criterion1(outputs, labels)
+                loss = self.metrics[metric_idx](outputs, labels)
                 # Backward pass and optimization
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
                 running_loss1 += loss.cpu().item()
             running_loss1 =  running_loss1 / (self.data_loader.train_size / self.batch_size)            
-            lossTest = self.testModel()            
+            lossTest = self.testModel(metric_idx)            
             print(f'Epoch [{epoch+1}/{self.num_epochs}]], Loss: {loss.item():.6f}, , Loss Val: {lossTest:.6f}')
             if lossTest < bestLossTest and epoch>self.num_epochs//2:
                 bestLossTest = lossTest
                 self.saveModel()
             
-    def testModel(self):
-#        self.model.eval()
+    def testModel(self, metric_idx):
         running_loss2 = 0.0
         with torch.no_grad():  # No need to track gradients during evaluation
             for inputsT, labelsT in self.test_loader:
                 inputsT = inputsT.to(device, dtype=default_type)
                 labelsT = labelsT.to(device, dtype=default_type)
                 outputsT = self.model(inputsT)
-                lossV = self.criterion0(outputsT, labelsT)
+                lossV = self.metrics[metric_idx](outputsT, labelsT)
                 running_loss2 += lossV.cpu().item()
-#        self.model.train()
         running_loss2 =  running_loss2 / (self.data_loader.test_size / self.batch_size)
         return lossV.item()
-#        return test_errors, test_labels, test_predictions
 
 
 def plotResults(ts, labelsIndices=None):
@@ -441,7 +426,7 @@ def plotResults(ts, labelsIndices=None):
                 test_errors.extend(errorsT.cpu().numpy())
                 test_labels.extend(labelsT.view(-1).tolist())
                 test_predictions.extend(outputsT.view(-1).tolist())
-                lossV = ts.criterion1(outputsT, labelsT)
+                lossV = ts.metrics[1](outputsT, labelsT)
                 running_loss1 += lossV.cpu().item()
 
         train_errors = []

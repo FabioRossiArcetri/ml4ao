@@ -2,8 +2,9 @@ model_type : GRU
 features_avg : []
 time_series: -1
 hidden_size : 1024
-hidden_layers : 5
-dropout: 0.02
+hidden_layers : 4
+mlp_layers: 4
+dropout: 0.01
 output_indices : [1]
 num_epochs : 100
 learning_rate : 1e-4
@@ -15,7 +16,7 @@ labels_names: ["L0"]
 units: ['m']
 splitFactor : 0.2
 batch_size: 16
-averaging: 1
+averaging: 2
 spacing: 1
 limit: 1700
 output_file: L0GRU_V10.pt

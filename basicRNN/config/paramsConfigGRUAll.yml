@@ -1,21 +1,21 @@
 model_type : GRU
 features_avg : []
-time_series: -1
-hidden_size : 1024
-hidden_layers : 5
-dropout : 0.02
-output_indices : [0,1,2,3,4,5,6,7]
+hidden_size : 1500
+hidden_layers : 4
+mlp_layers: 4
+dropout : 0.005
+output_indices : [0,1,2,3,4,7]
 num_epochs : 100
 learning_rate : 1e-4
 dataFolder: /raid1/ml4ao/torch_data/
 outputFolder: /raid1/ml4ao/torch_output/
 dataFile: tensor_data_olmodes4_V9.pt
 labelsFile: tensor_data_labels13_V9.pt
-labels_names: ['Seeing', 'L0', 'Wind', 'Strehl Ratio', 'Wind0', 'Wind1', 'Wind2', 'Wind3']
+labels_names: ['Seeing', 'L0', 'Wind', 'Strehl Ratio', 'Wind0', 'Wind3']
 units: ['asec', 'm', 'm/s', '1', 'm/s', 'm/s', 'm/s', 'm/s']
 splitFactor : 0.2
 batch_size: 16
-averaging: 1
+averaging: 2
 spacing: 1
 limit: 1700
 output_file: AllGRU_V10.pt 
