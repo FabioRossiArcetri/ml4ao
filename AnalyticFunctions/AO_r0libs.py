@@ -9,12 +9,12 @@ from scipy import special
 
 
 def r0_wind_estimation(diameter_in, freq_in, psd_in,nmodes_in,outerScale_in):
-    #ESTIMATE r0 and wind speed from psd
-    #diameter_in is the telescope diameter. From, params.txt (PASATA) it is params['MAIN']['PIXEL_PITCH']*params['MAIN']['PIXEL_PUPIL']
-    #freq_in is the "freq" output of compute_psd function
-    #psd_in is the "psd" output from compute_psd function rescaled this way: psd*(2*np.pi/500.)**2.
-    #nmodes_in is the number of corrected modes
-    #outerScale is usually 20. (m) whithout better estimation
+    # ESTIMATE r0 and wind speed from psd
+    # diameter_in is the telescope diameter. From, params.txt (PASATA) it is params['MAIN']['PIXEL_PITCH']*params['MAIN']['PIXEL_PUPIL']
+    # freq_in is the "freq" output of compute_psd function
+    # psd_in is the "psd" output from compute_psd function rescaled this way: psd*(2*np.pi/500.)**2.
+    # nmodes_in is the number of corrected modes
+    # outerScale is usually 20. (m) whithout better estimation
     nnMin=3
     turb_var,wind_speed = turb_var_and_wind_estimation(diameter_in, freq_in, psd_in, nmodes_in, add_power=False)
     r0 = r0_estimation_from_olvar(turb_var, nmodes_in, nnMin, diameter_in,outerScale_in)
@@ -22,9 +22,10 @@ def r0_wind_estimation(diameter_in, freq_in, psd_in,nmodes_in,outerScale_in):
     return r0,wind_speed
 
 def compute_psd(ArrayIn,framerate):
-    #If ArrayIn is 2D, it must be [nmodes,ntimes], else it must be a 1D array
-    #ArrayIn is usually turbArray = comm + resMod, where comm is red from comm.fits and resMod is red from resMod.fits (Passata)
-    #framerate is framerate=1.0/timestep
+    # Computes the PSD
+    # If ArrayIn is 2D, it must be [nmodes,ntimes], else it must be a 1D array
+    # ArrayIn is usually turbArray = comm + resMod (or POL) where comm is red from comm.fits and resMod is red from resMod.fits (Passata)
+    # framerate is framerate=1.0/timestep
     if isinstance(ArrayIn,np.ndarray):
         if len(ArrayIn.shape) == 2 :
             nmodes=ArrayIn.shape[0]
@@ -51,6 +52,14 @@ def compute_psd(ArrayIn,framerate):
 
 
 def turb_var_and_wind_estimation(diameter_in, freq_in, psd_in, nmodes_in, add_power=False):
+    # Estimates the wind speed and the variance of the turbolence, by mode
+    # Based on Guido's work
+    # diameter_in: telescope diameter
+    # freq_in: vector of the frequency sampling
+    # psd_in: 2D array holding a PSD for each mode
+    # nmodes_in: number of modes
+    # add_power: when this is True tries to compute the share of power lost
+    
     nPSD = psd_in.shape[0]
     fsample=freq_in[1]-freq_in[0]
 
@@ -99,13 +108,13 @@ def turb_var_and_wind_estimation(diameter_in, freq_in, psd_in, nmodes_in, add_po
     wind_speed_median = np.median(wind_speed_pos)
 
     #checks if some modes must be discarded:
-    #1) because the minimum frequency of the PSD is greater than its cut-off frequency.
+    # 1) because the minimum frequency of the PSD is greater than its cut-off frequency.
     f_cut_mean = 0.3 * (radial_degree+1.) * wind_speed_mean / diameter_in
     idx_in_freq = np.where(f_cut_mean[idx_pos] >= min(freq_in))
     wind_speed_mean = np.mean(wind_speed_pos[idx_in_freq])
     wind_speed_median = np.median(wind_speed_pos[idx_in_freq])
 
-    #2) because is out of 3 sigma
+    # 2) because is out of 3 sigma
     sigma_wind = np.std(wind_speed[idx_in_freq])
     wind_speed_pos_tmp=wind_speed_pos[idx_in_freq]
     idx_in_sigma1= np.where(wind_speed_pos_tmp <= wind_speed_mean+3.*sigma_wind)
@@ -128,7 +137,11 @@ def turb_var_and_wind_estimation(diameter_in, freq_in, psd_in, nmodes_in, add_po
 
     return turb_var,wind_speed_mean
 
-def NelderMead_psd_estimation(freq_in, psd_in,init_variables):
+def NelderMead_psd_estimation(freq_in, psd_in, init_variables):
+    # Fitting of the PSD in input and a model of PSD defined by 3 linear segments, 
+    # where low and hig temporal freqs are constant, medium freqs have f^(-17/3) slope
+    # freq_in: vector of the frequency sampling
+    # psd_in: imput PSD
     if isinstance(init_variables,np.ndarray):
         P0 = init_variables
 #        P0 = init_variables[:,0]
@@ -148,9 +161,9 @@ def NelderMead_psd_estimation(freq_in, psd_in,init_variables):
     return solution
 
 def closest(value_in,array_in,outboundflag=False):
-    #closest returns the index within an array which is closest to the
-    #user supplied value. If value is outside bounds of array, closest
-    #returns -1.
+    # closest returns the index within an array which is closest to the
+    # user supplied value. If value is outside bounds of array, closest
+    # returns -1.
     if outboundflag :
         nmax=np.max(array_in)
         if value_in > nmax:
@@ -162,6 +175,7 @@ def closest(value_in,array_in,outboundflag=False):
     return index
 
 def res_psd_estimation(variables):
+    # defines the error metric to be minimized in the temporal PSD model fitting
     n_glob = len(psd_get)
     #checks on the variables
     #cut-off frequency > min(param.freq) > 0
@@ -224,6 +238,8 @@ def zern_degree(index):
 #    return n,m
 
 def kolm_covar(j1, j2):
+    # covariance between two zernike modes
+    
     n1,m1=zern_degree(j1)
     n2,m2=zern_degree(j2)
 
@@ -252,6 +268,7 @@ def kolm_covar(j1, j2):
     return result*c1*c2*(-1)**nmn
 
 def kolm_mcovar(max_index) :
+    # computes a covariance matrix of the zernike modes
     n_elem = max_index-1
     if n_elem < 1:
         return 0
@@ -277,9 +294,9 @@ def diag_matrix(M):
     return diagonal
 
 def diagonalize_matrix(M):
-    #Find Eigenvalues and Eigenvectors
+    # Find Eigenvalues and Eigenvectors
     eigenvalues, eigenvectors = np.linalg.eig(M)
-    #Check Diagonalizability
+    # Check Diagonalizability
     if not np.all(np.iscomplex(eigenvalues)):
         #Create Diagonal Matrix
         D = np.diag(eigenvalues)
@@ -293,12 +310,15 @@ def diagonalize_matrix(M):
     return diagonalized_matrix
 
 def r0_est_fit_errfunc(r0i):
+    # error metric to be optimized when fitting the modal variances of the atmosphere
     r0 = np.abs(r0i)
     theoVar = (4.*np.pi**2) * (diam_get/r0)**(5./3.) * theovar1
     ResError = np.sum(np.abs(olvarMean - theoVar)/olvarMean)
     return ResError
 
 def r0_estimation_from_olvar(olvar, nmodes, nnMin, DpupM, outerScale):
+    # Based on Fernando Quiros Pacheco work
+    # estimates r0 from the POL modal variances
     modes_idx=np.arange(nmodes)
     nnMax=int((np.sqrt(8*nmodes-7)-1))//2
     nnRange=[nnMin,nnMax-1]
@@ -368,7 +388,8 @@ def r0_estimation_from_olvar(olvar, nmodes, nnMin, DpupM, outerScale):
     return r0fit
 
 def sr_from_slopes(deltaComm, framerate, seeing, lambda_c=1650.0, TILT_FREE=False, VERBOSE=False):
-    #lambda: Wvelength in nm. Default = 1650 nm.
+    # Marechal estimation of sr from WFS error
+    # lambda: Wvelength in nm. Default = 1650 nm.
     lambda_c=1650
     freq_max=framerate/2.
     nmodes=deltaComm.shape[0]
